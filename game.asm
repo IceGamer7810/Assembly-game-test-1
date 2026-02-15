@@ -3,9 +3,8 @@ entry start
 
 include 'tools\INCLUDE\win32ax.inc'
 
-WM_MOUSEMOVE = 0200h
+WM_TIMER = 113h
 
-; OpenGL constants
 GL_COLOR_BUFFER_BIT = 00004000h
 GL_DEPTH_BUFFER_BIT = 00000100h
 GL_QUADS = 0007h
@@ -20,10 +19,10 @@ PFD_DOUBLEBUFFER = 00000001h
 PFD_TYPE_RGBA = 0
 PFD_MAIN_PLANE = 0
 
-VK_W = 57
-VK_A = 65
-VK_S = 83
-VK_D = 68
+VK_W = 57h
+VK_A = 41h
+VK_S = 53h
+VK_D = 44h
 
 section '.data' data readable writeable
   className db 'AsmFps3DClass',0
@@ -32,15 +31,16 @@ section '.data' data readable writeable
   hWnd dd 0
   hDC dd 0
   hRC dd 0
-  running dd 1
 
   lastTick dd 0
   deltaT dd 0.016
+  msTemp dd 16
 
   camX dd 0.0
   camZ dd 0.0
-  camYaw dd 0.0            ; degrees
-  camPitch dd -2.0         ; degrees
+  camYaw dd 0.0
+  camPitch dd 0.0
+
   jumpOffset dd 0.0
   velY dd 0.0
 
@@ -48,55 +48,83 @@ section '.data' data readable writeable
   crouchEyeY dd 1.05
   eyeY dd 1.65
 
-  walkSpeed dd 4.3
-  runMult dd 1.9
+  walkSpeed dd 4.2
+  runMult dd 1.85
   crouchMult dd 0.52
-  gravity dd 26.0
+  turnSpeed dd 110.0
+  lookSpeed dd 85.0
+  mouseSensYaw dd 0.10
+  mouseSensPitch dd 0.08
+  gravity dd 24.0
   jumpVel dd 8.6
-
-  mouseSensYaw dd 0.12
-  mouseSensPitch dd 0.09
 
   deg2rad dd 0.0174532925
 
   tmpForward dd 0
   tmpStrafe dd 0
   tmpPitchI dd 0
-  tmpSpeed dd 0.0
-  tmpFloat dd 0.0
-  sinYaw dd 0.0
-  cosYaw dd 0.0
 
-  centerX dd 0
-  centerY dd 0
+  tmpSpeed dd 0.0
+  tmpAngle dd 0.0
+  sinYaw dd 0.0
+  cosYaw dd 1.0
+  tmpX dd 0.0
+  tmpZ dd 0.0
+  tmpEye dd 0.0
+
+  fZero dd 0.0
+  fOne dd 1.0
+  fNegOne dd -1.0
+  fTen dd 10.0
+  fNegTen dd -10.0
+  fLineA dd -0.05
+  fLineB dd 0.05
+  fCrossZero dd 0.0
+  fLineColor dd 1.0
+  fBgR dd 0.08
+  fBgG dd 0.08
+  fBgB dd 0.18
+  fDbgZ dd -4.0
+  fDbgLeft dd -1.2
+  fDbgRight dd 1.2
+  fDbgTop dd 0.8
+  fDbgBottom dd -0.8
+  f80 dd 80.0
+  fNeg80 dd -80.0
+
+  colDarkR dd 0.18
+  colDarkG dd 0.30
+  colDarkB dd 0.55
+  colLightR dd 0.90
+  colLightG dd 0.90
+  colLightB dd 0.90
+
+  ; Perspective frustum
+  projLeft dq -0.75
+  projRight dq 0.75
+  projBottom dq -0.42
+  projTop dq 0.42
+  projNear dq 0.7
+  projFar dq 200.0
+
+  fAxisX dd 1.0
+  fAxisY dd 0.0
+  fAxisZ dd 0.0
+  fUpX dd 0.0
+  fUpY dd 1.0
+  fUpZ dd 0.0
+
+  keyTmp dw 0
 
   msg MSG
   wc WNDCLASSEX
   pfd PIXELFORMATDESCRIPTOR
-
-  floorRange dd 22
-  floorY dd 0.0
-
-  colDarkR dd 0.22
-  colDarkG dd 0.35
-  colDarkB dd 0.58
-  colLightR dd 0.92
-  colLightG dd 0.92
-  colLightB dd 0.92
-
-  fNegOne dd -1.0
-  fZero dd 0.0
-  fOne dd 1.0
-  fLineGap dd 0.02
-  fLineLen dd 0.05
-  fCrossZ dd 0.0
-  fCrossColor dd 1.0
-  thousand dd 1000
-  f80 dd 80.0
-  fNeg80 dd -80.0
-  fHalf dd 0.5
-
-  keyState dd 0
+  ps PAINTSTRUCT
+  rc RECT
+  lockRect RECT
+  lockTL POINT
+  lockBR POINT
+  centerPt POINT
 
 section '.code' code readable executable
 start:
@@ -121,15 +149,30 @@ start:
   test eax,eax
   jz .exit
 
-  invoke CreateWindowEx,0,className,windowTitle,WS_OVERLAPPEDWINDOW + WS_VISIBLE,120,80,1280,720,NULL,NULL,ebx,NULL
+  invoke CreateWindowEx,0,className,windowTitle,WS_OVERLAPPEDWINDOW + WS_VISIBLE + WS_CLIPCHILDREN + WS_CLIPSIBLINGS,100,60,1280,720,NULL,NULL,ebx,NULL
   test eax,eax
   jz .exit
-  mov [hWnd],eax
 
-  invoke GetDC,eax
+.msg_loop:
+  invoke GetMessage,msg,NULL,0,0
+  test eax,eax
+  jz .exit
+  invoke TranslateMessage,msg
+  invoke DispatchMessage,msg
+  jmp .msg_loop
+
+.exit:
+  invoke ExitProcess,0
+
+proc InitGL
+  invoke GetDC,[hWnd]
   mov [hDC],eax
 
-  ; Pixel format setup for OpenGL
+  mov edi,pfd
+  mov ecx,sizeof.PIXELFORMATDESCRIPTOR/4
+  xor eax,eax
+  rep stosd
+
   mov [pfd.nSize],sizeof.PIXELFORMATDESCRIPTOR
   mov [pfd.nVersion],1
   mov [pfd.dwFlags],PFD_DRAW_TO_WINDOW + PFD_SUPPORT_OPENGL + PFD_DOUBLEBUFFER
@@ -141,76 +184,97 @@ start:
 
   invoke ChoosePixelFormat,[hDC],pfd
   test eax,eax
-  jz .destroy
+  jz .fail
   mov esi,eax
+
   invoke SetPixelFormat,[hDC],esi,pfd
   test eax,eax
-  jz .destroy
+  jz .fail
 
   invoke wglCreateContext,[hDC]
   test eax,eax
-  jz .destroy
+  jz .fail
   mov [hRC],eax
 
   invoke wglMakeCurrent,[hDC],[hRC]
   test eax,eax
-  jz .destroy
+  jz .fail
 
-  invoke ShowWindow,[hWnd],SW_SHOW
-  invoke UpdateWindow,[hWnd]
-
-  invoke glClearColor,0.0,0.0,0.0,1.0
+  invoke glClearColor,[fBgR],[fBgG],[fBgB],[fOne]
   invoke glEnable,GL_DEPTH_TEST
 
   invoke GetTickCount
   mov [lastTick],eax
 
-.main_loop:
-  cmp [running],0
-  je .cleanup
+  invoke SetTimer,[hWnd],1,16,0
+  call LockCursor
+  mov eax,1
+  ret
 
-.msg_loop:
-  invoke PeekMessage,msg,NULL,0,0,PM_REMOVE
-  test eax,eax
-  jz .update
-  cmp [msg.message],WM_QUIT
-  je .quit
-  invoke TranslateMessage,msg
-  invoke DispatchMessage,msg
-  jmp .msg_loop
+.fail:
+  xor eax,eax
+  ret
+endp
 
-.update:
-  call UpdateDelta
-  call UpdateMouseLook
-  call UpdateMovement
-  call RenderFrame
-  invoke SwapBuffers,[hDC]
-  invoke Sleep,1
-  jmp .main_loop
-
-.quit:
-  mov [running],0
-
-.cleanup:
+proc ShutdownGL
+  invoke KillTimer,[hWnd],1
+  call UnlockCursor
   invoke wglMakeCurrent,0,0
   cmp [hRC],0
   je @f
   invoke wglDeleteContext,[hRC]
 @@:
-  cmp [hWnd],0
-  je .exit
   cmp [hDC],0
   je @f
   invoke ReleaseDC,[hWnd],[hDC]
 @@:
-  invoke DestroyWindow,[hWnd]
+  ret
+endp
 
-.exit:
-  invoke ExitProcess,0
+proc LockCursor
+  invoke GetClientRect,[hWnd],lockRect
+  mov eax,[lockRect.left]
+  mov [lockTL.x],eax
+  mov eax,[lockRect.top]
+  mov [lockTL.y],eax
+  mov eax,[lockRect.right]
+  mov [lockBR.x],eax
+  mov eax,[lockRect.bottom]
+  mov [lockBR.y],eax
 
-.destroy:
-  mov [running],0
-  jmp .cleanup
+  invoke ClientToScreen,[hWnd],lockTL
+  invoke ClientToScreen,[hWnd],lockBR
+
+  mov eax,[lockTL.x]
+  mov [lockRect.left],eax
+  mov eax,[lockTL.y]
+  mov [lockRect.top],eax
+  mov eax,[lockBR.x]
+  mov [lockRect.right],eax
+  mov eax,[lockBR.y]
+  mov [lockRect.bottom],eax
+
+  ; center cursor into client area
+  mov eax,[lockRect.left]
+  add eax,[lockRect.right]
+  shr eax,1
+  mov [centerPt.x],eax
+  mov eax,[lockRect.top]
+  add eax,[lockRect.bottom]
+  shr eax,1
+  mov [centerPt.y],eax
+  invoke SetCursorPos,[centerPt.x],[centerPt.y]
+
+  invoke ClipCursor,lockRect
+  invoke ShowCursor,FALSE
+  ret
+endp
+
+proc UnlockCursor
+  invoke ClipCursor,0
+  invoke ShowCursor,TRUE
+  ret
+endp
 
 proc UpdateDelta
   invoke GetTickCount
@@ -221,106 +285,123 @@ proc UpdateDelta
   jbe @f
   mov eax,50
 @@:
-  mov [tmpForward],eax
-  fild [tmpForward]
+  mov [msTemp],eax
+  fild [msTemp]
   fidiv [thousand]
   fstp [deltaT]
   ret
 endp
 
-proc UpdateMouseLook
-  invoke GetClientRect,[hWnd],clientRect
-  mov eax,[clientRect.right]
-  shr eax,1
-  mov [centerX],eax
-  mov eax,[clientRect.bottom]
-  shr eax,1
-  mov [centerY],eax
-
-  mov eax,[centerX]
-  mov [mousePoint.x],eax
-  mov eax,[centerY]
-  mov [mousePoint.y],eax
-  invoke ClientToScreen,[hWnd],mousePoint
-
-  invoke GetCursorPos,cursorPoint
-
-  mov eax,[cursorPoint.x]
-  sub eax,[mousePoint.x]
+proc UpdatePlayer
+  ; mouse look (cursor is clipped to window and re-centered)
+  invoke GetCursorPos,lockTL
+  mov eax,[lockTL.x]
+  sub eax,[centerPt.x]
   mov [tmpForward],eax
-
-  mov eax,[cursorPoint.y]
-  sub eax,[mousePoint.y]
+  mov eax,[lockTL.y]
+  sub eax,[centerPt.y]
   mov [tmpStrafe],eax
 
-  cmp [tmpForward],0
-  jne .apply
-  cmp [tmpStrafe],0
-  je .recenter
+  cmp dword [tmpForward],0
+  jne .mouse_apply
+  cmp dword [tmpStrafe],0
+  je .keyboard_look
 
-.apply:
-  ; yaw += dx * sens
+.mouse_apply:
   fild [tmpForward]
   fmul [mouseSensYaw]
   fadd [camYaw]
   fstp [camYaw]
 
-  ; pitch -= dy * sens
   fild [tmpStrafe]
   fmul [mouseSensPitch]
   fsubr [camPitch]
   fstp [camPitch]
 
-  ; clamp pitch [-80,80]
+  invoke SetCursorPos,[centerPt.x],[centerPt.y]
+
+.keyboard_look:
+  ; look left/right
+  invoke GetAsyncKeyState,VK_LEFT
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
+  jz @f
+  fld [turnSpeed]
+  fmul [deltaT]
+  fsub [camYaw]
+  fstp [camYaw]
+@@:
+  invoke GetAsyncKeyState,VK_RIGHT
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
+  jz @f
+  fld [turnSpeed]
+  fmul [deltaT]
+  fadd [camYaw]
+  fstp [camYaw]
+@@:
+
+  ; look up/down
+  invoke GetAsyncKeyState,VK_UP
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
+  jz @f
+  fld [lookSpeed]
+  fmul [deltaT]
+  fsub [camPitch]
+  fstp [camPitch]
+@@:
+  invoke GetAsyncKeyState,VK_DOWN
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
+  jz @f
+  fld [lookSpeed]
+  fmul [deltaT]
+  fadd [camPitch]
+  fstp [camPitch]
+@@:
+
+  ; clamp pitch
   fld [camPitch]
   fistp [tmpPitchI]
   mov eax,[tmpPitchI]
   cmp eax,80
-  jg .set_hi
-  cmp eax,-80
-  jl .set_lo
-  jmp .recenter
-
-.set_hi:
-  fstp st0
+  jle @f
   mov eax,[f80]
   mov [camPitch],eax
-  jmp .recenter
-
-.set_lo:
-  fstp st0
+@@:
+  cmp eax,-80
+  jge @f
   mov eax,[fNeg80]
   mov [camPitch],eax
+@@:
 
-.recenter:
-  invoke SetCursorPos,[mousePoint.x],[mousePoint.y]
-  ret
-endp
-
-proc UpdateMovement
-  ; forward input
+  ; movement input
   xor ecx,ecx
   invoke GetAsyncKeyState,VK_W
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz @f
   inc ecx
 @@:
   invoke GetAsyncKeyState,VK_S
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz @f
   dec ecx
 @@:
   mov [tmpForward],ecx
 
-  ; strafe input
   xor ecx,ecx
   invoke GetAsyncKeyState,VK_D
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz @f
   inc ecx
 @@:
   invoke GetAsyncKeyState,VK_A
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz @f
   dec ecx
 @@:
@@ -329,79 +410,80 @@ proc UpdateMovement
   ; speed
   fld [walkSpeed]
   invoke GetAsyncKeyState,VK_SHIFT
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz @f
   fmul [runMult]
 @@:
   invoke GetAsyncKeyState,VK_CONTROL
-  test ax,8000h
-  jz @f
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
+  jz .not_crouch
   fmul [crouchMult]
   fld [crouchEyeY]
   fstp [eyeY]
   jmp .speed_done
-@@:
+.not_crouch:
   fld [baseEyeY]
   fstp [eyeY]
 .speed_done:
   fstp [tmpSpeed]
 
-  ; jump
+  ; jump input
   invoke GetAsyncKeyState,VK_SPACE
-  test ax,8000h
+  mov [keyTmp],ax
+  test word [keyTmp],8000h
   jz .physics
   fld [jumpOffset]
-  fldz
-  fcomip st0,st1
-  jne @f
-  fstp st0
+  fistp [tmpPitchI]
+  cmp dword [tmpPitchI],0
+  jne .physics
   fld [jumpVel]
   fstp [velY]
-  jmp .physics
-@@:
-  fstp st0
 
 .physics:
-  ; velY -= gravity*dt
+  ; velY -= gravity * dt
   fld [gravity]
   fmul [deltaT]
   fsubr [velY]
   fstp [velY]
 
-  ; jumpOffset += velY*dt
+  ; jumpOffset += velY * dt
   fld [velY]
   fmul [deltaT]
   fadd [jumpOffset]
   fstp [jumpOffset]
 
-  ; ground clamp
+  ; clamp ground
   fld [jumpOffset]
-  fldz
-  fcomip st0,st1
-  jae @f
-  fstp st0
+  fistp [tmpPitchI]
+  cmp dword [tmpPitchI],0
+  jge @f
   fldz
   fstp [jumpOffset]
+  fldz
   fstp [velY]
 @@:
-  fstp st0
 
-  ; yaw in rad
+  ; sin/cos yaw
   fld [camYaw]
   fmul [deg2rad]
-  fsincos
-  fstp [cosYaw]
+  fst [tmpAngle]
+  fsin
   fstp [sinYaw]
+  fld [tmpAngle]
+  fcos
+  fstp [cosYaw]
 
-  ; move if input
-  cmp [tmpForward],0
-  jne .move
-  cmp [tmpStrafe],0
-  jne .move
+  ; if no move, done
+  cmp dword [tmpForward],0
+  jne .do_move
+  cmp dword [tmpStrafe],0
+  jne .do_move
   ret
 
-.move:
-  ; deltaX = (sinYaw*forward + cosYaw*strafe)*speed*dt
+.do_move:
+  ; camX += (sin*forward + cos*strafe) * speed * dt
   fld [sinYaw]
   fild [tmpForward]
   fmulp st1,st0
@@ -414,7 +496,7 @@ proc UpdateMovement
   fadd [camX]
   fstp [camX]
 
-  ; deltaZ = (cosYaw*forward - sinYaw*strafe)*speed*dt
+  ; camZ += (cos*forward - sin*strafe) * speed * dt
   fld [cosYaw]
   fild [tmpForward]
   fmulp st1,st0
@@ -430,55 +512,86 @@ proc UpdateMovement
   ret
 endp
 
-proc RenderFrame
+proc RenderScene
   local i:DWORD
   local j:DWORD
   local parity:DWORD
 
-  invoke glViewport,0,0,[clientW],[clientH]
+  invoke GetClientRect,[hWnd],rc
+  invoke glViewport,0,0,[rc.right],[rc.bottom]
   invoke glClear,GL_COLOR_BUFFER_BIT + GL_DEPTH_BUFFER_BIT
 
+  ; projection
   invoke glMatrixMode,GL_PROJECTION
   invoke glLoadIdentity
-  call gluPerspectiveCompat
+  call ApplyProjection
 
+  ; view transform (FPS camera)
   invoke glMatrixMode,GL_MODELVIEW
   invoke glLoadIdentity
 
-  ; Camera transform
-  fld [camPitch]
-  fchs
-  fstp [tmpFloat]
-  invoke glRotatef,[tmpFloat],1.0,0.0,0.0
+  ; always-visible reference slab (camera-local), so orientation is never fully black
+  invoke glPushMatrix
+  invoke glTranslatef,[fZero],[fZero],[fDbgZ]
+  invoke glBegin,GL_QUADS
+  invoke glColor3f,[colLightR],[colLightG],[colLightB]
+  invoke glVertex3f,[fDbgLeft],[fDbgBottom],[fZero]
+  invoke glVertex3f,[fDbgRight],[fDbgBottom],[fZero]
+  invoke glVertex3f,[fDbgRight],[fDbgTop],[fZero]
+  invoke glVertex3f,[fDbgLeft],[fDbgTop],[fZero]
+  invoke glEnd
+  invoke glBegin,GL_LINES
+  invoke glColor3f,[fZero],[fZero],[fZero]
+  invoke glVertex3f,[fDbgLeft],[fCrossZero],[fZero]
+  invoke glVertex3f,[fDbgRight],[fCrossZero],[fZero]
+  invoke glVertex3f,[fCrossZero],[fDbgBottom],[fZero]
+  invoke glVertex3f,[fCrossZero],[fDbgTop],[fZero]
+  invoke glEnd
+  invoke glPopMatrix
+
+  ; keep pitch neutral for stability for now; yaw still active
+  ; fld [camPitch]
+  ; fstp [tmpX]
+  ; invoke glRotatef,[tmpX],[fAxisX],[fAxisY],[fAxisZ]
 
   fld [camYaw]
   fchs
-  fstp [tmpFloat]
-  invoke glRotatef,[tmpFloat],0.0,1.0,0.0
+  fstp [tmpX]
+  invoke glRotatef,[tmpX],[fUpX],[fUpY],[fUpZ]
 
   fld [camX]
   fchs
-  fstp [tmpFloat]
+  fstp [tmpX]
   fld [eyeY]
   fadd [jumpOffset]
   fchs
-  fstp [tmpSpeed]
+  fstp [tmpEye]
   fld [camZ]
   fchs
-  fstp [sinYaw]
-  invoke glTranslatef,[tmpFloat],[tmpSpeed],[sinYaw]
+  fstp [tmpZ]
+  invoke glTranslatef,[tmpX],[tmpEye],[tmpZ]
 
-  ; Floor checker quads
-  mov [i],-22
+  ; world axes for orientation
+  invoke glBegin,GL_LINES
+  invoke glColor3f,[fOne],[fZero],[fZero]
+  invoke glVertex3f,[fNegTen],[fZero],[fZero]
+  invoke glVertex3f,[fTen],[fZero],[fZero]
+  invoke glColor3f,[fZero],[fOne],[fZero]
+  invoke glVertex3f,[fZero],[fZero],[fNegTen]
+  invoke glVertex3f,[fZero],[fZero],[fTen]
+  invoke glEnd
+
+  ; checker floor y=0, x/z range [-30..30]
+  mov [i],-30
 .y_loop:
   mov eax,[i]
-  cmp eax,22
-  jg .floor_done
+  cmp eax,30
+  jg .draw_cross
 
-  mov [j],-22
+  mov [j],-30
 .x_loop:
   mov eax,[j]
-  cmp eax,22
+  cmp eax,30
   jg .next_row
 
   mov eax,[i]
@@ -487,43 +600,41 @@ proc RenderFrame
   mov [parity],eax
   cmp eax,0
   jne .dark
-
   invoke glColor3f,[colLightR],[colLightG],[colLightB]
-  jmp .draw_tile
-
+  jmp .tile
 .dark:
   invoke glColor3f,[colDarkR],[colDarkG],[colDarkB]
 
-.draw_tile:
+.tile:
   invoke glBegin,GL_QUADS
 
   fild [j]
-  fstp [tmpFloat]
+  fstp [tmpX]
   fild [i]
-  fstp [tmpSpeed]
-  invoke glVertex3f,[tmpFloat],[floorY],[tmpSpeed]
+  fstp [tmpZ]
+  invoke glVertex3f,[tmpX],[fZero],[tmpZ]
 
   fild [j]
   fadd [fOne]
-  fstp [tmpFloat]
+  fstp [tmpX]
   fild [i]
-  fstp [tmpSpeed]
-  invoke glVertex3f,[tmpFloat],[floorY],[tmpSpeed]
+  fstp [tmpZ]
+  invoke glVertex3f,[tmpX],[fZero],[tmpZ]
 
   fild [j]
   fadd [fOne]
-  fstp [tmpFloat]
+  fstp [tmpX]
   fild [i]
   fadd [fOne]
-  fstp [tmpSpeed]
-  invoke glVertex3f,[tmpFloat],[floorY],[tmpSpeed]
+  fstp [tmpZ]
+  invoke glVertex3f,[tmpX],[fZero],[tmpZ]
 
   fild [j]
-  fstp [tmpFloat]
+  fstp [tmpX]
   fild [i]
   fadd [fOne]
-  fstp [tmpSpeed]
-  invoke glVertex3f,[tmpFloat],[floorY],[tmpSpeed]
+  fstp [tmpZ]
+  invoke glVertex3f,[tmpX],[fZero],[tmpZ]
 
   invoke glEnd
 
@@ -534,8 +645,8 @@ proc RenderFrame
   inc [i]
   jmp .y_loop
 
-.floor_done:
-  ; Crosshair overlay in screen center
+.draw_cross:
+  ; 2D crosshair overlay
   invoke glMatrixMode,GL_PROJECTION
   invoke glPushMatrix
   invoke glLoadIdentity
@@ -544,24 +655,12 @@ proc RenderFrame
   invoke glLoadIdentity
 
   invoke glDisable,GL_DEPTH_TEST
-  invoke glColor3f,[fCrossColor],[fCrossColor],[fCrossColor]
+  invoke glColor3f,[fLineColor],[fLineColor],[fLineColor]
   invoke glBegin,GL_LINES
-
-  invoke glVertex3f,[fNegOne],[fZero],[fCrossZ] ; dummy to prime fp stack stable behavior
-
-  ; left
-  invoke glVertex3f,-0.05,0.0,0.0
-  invoke glVertex3f,-0.02,0.0,0.0
-  ; right
-  invoke glVertex3f,0.02,0.0,0.0
-  invoke glVertex3f,0.05,0.0,0.0
-  ; top
-  invoke glVertex3f,0.0,0.05,0.0
-  invoke glVertex3f,0.0,0.02,0.0
-  ; bottom
-  invoke glVertex3f,0.0,-0.02,0.0
-  invoke glVertex3f,0.0,-0.05,0.0
-
+  invoke glVertex3f,[fLineA],[fCrossZero],[fCrossZero]
+  invoke glVertex3f,[fLineB],[fCrossZero],[fCrossZero]
+  invoke glVertex3f,[fCrossZero],[fLineA],[fCrossZero]
+  invoke glVertex3f,[fCrossZero],[fLineB],[fCrossZero]
   invoke glEnd
   invoke glEnable,GL_DEPTH_TEST
 
@@ -570,81 +669,89 @@ proc RenderFrame
   invoke glPopMatrix
   invoke glMatrixMode,GL_MODELVIEW
 
+  invoke SwapBuffers,[hDC]
   ret
 endp
 
-proc gluPerspectiveCompat
-  ; cheap perspective frustum via glFrustum(-a,a,-1,1,1,200)
-  local aspect:DWORD
-  fild [clientW]
-  fild [clientH]
-  fdivp st1,st0
-  fstp [tmpFloat]
-
-  ; left/right based on aspect and fov-ish scale
-  fld [tmpFloat]
-  fmul [fHalf]
-  fstp [tmpSpeed]
-
-  fld [tmpSpeed]
-  fchs
-  fstp [sinYaw]   ; left
-  fld [tmpSpeed]
-  fstp [cosYaw]   ; right
-
-  invoke glFrustum,[sinYaw],[cosYaw],-0.5,0.5,1.0,200.0
+proc ApplyProjection
+  ; glFrustum(left,right,bottom,top,near,far) with qword args
+  push dword [projFar+4]
+  push dword [projFar]
+  push dword [projNear+4]
+  push dword [projNear]
+  push dword [projTop+4]
+  push dword [projTop]
+  push dword [projBottom+4]
+  push dword [projBottom]
+  push dword [projRight+4]
+  push dword [projRight]
+  push dword [projLeft+4]
+  push dword [projLeft]
+  call [glFrustum]
   ret
 endp
 
 proc WndProc hwnd,wmsg,wparam,lparam
+  cmp [wmsg],WM_CREATE
+  je .wmcreate
+  cmp [wmsg],WM_SETFOCUS
+  je .wmsetfocus
+  cmp [wmsg],WM_KILLFOCUS
+  je .wmkillfocus
+  cmp [wmsg],WM_TIMER
+  je .wmtimer
+  cmp [wmsg],WM_PAINT
+  je .wmpaint
   cmp [wmsg],WM_DESTROY
   je .wmdestroy
-  cmp [wmsg],WM_SIZE
-  je .wmsize
-  cmp [wmsg],WM_SETFOCUS
-  je .focus
-  cmp [wmsg],WM_KILLFOCUS
-  je .killfocus
+
   invoke DefWindowProc,[hwnd],[wmsg],[wparam],[lparam]
   ret
 
-.wmsize:
-  mov eax,[lparam]
-  and eax,0FFFFh
-  mov [clientW],eax
-  mov eax,[lparam]
-  shr eax,16
+.wmcreate:
+  mov eax,[hwnd]
+  mov [hWnd],eax
+  call InitGL
   test eax,eax
   jnz @f
-  mov eax,1
+  invoke PostQuitMessage,1
 @@:
-  mov [clientH],eax
   xor eax,eax
   ret
 
-.focus:
-  invoke ShowCursor,FALSE
+.wmsetfocus:
+  call LockCursor
   xor eax,eax
   ret
 
-.killfocus:
-  invoke ShowCursor,TRUE
+.wmkillfocus:
+  call UnlockCursor
+  xor eax,eax
+  ret
+
+.wmtimer:
+  invoke InvalidateRect,[hWnd],0,FALSE
+  xor eax,eax
+  ret
+
+.wmpaint:
+  invoke BeginPaint,[hWnd],ps
+  call UpdateDelta
+  call UpdatePlayer
+  call RenderScene
+  invoke EndPaint,[hWnd],ps
   xor eax,eax
   ret
 
 .wmdestroy:
-  mov [running],0
+  call ShutdownGL
   invoke PostQuitMessage,0
   xor eax,eax
   ret
 endp
 
 section '.bss' readable writeable
-  mousePoint POINT
-  cursorPoint POINT
-  clientRect RECT
-  clientW dd 1280
-  clientH dd 720
+  thousand dd 1000
 
 section '.idata' import data readable writeable
   library kernel,'KERNEL32.DLL',\
@@ -655,28 +762,30 @@ section '.idata' import data readable writeable
   import kernel,\
          GetModuleHandle,'GetModuleHandleA',\
          GetTickCount,'GetTickCount',\
-         Sleep,'Sleep',\
          ExitProcess,'ExitProcess'
 
   import user,\
          RegisterClassEx,'RegisterClassExA',\
          CreateWindowEx,'CreateWindowExA',\
          DefWindowProc,'DefWindowProcA',\
-         ShowWindow,'ShowWindow',\
-         UpdateWindow,'UpdateWindow',\
-         PeekMessage,'PeekMessageA',\
+         GetMessage,'GetMessageA',\
          TranslateMessage,'TranslateMessage',\
          DispatchMessage,'DispatchMessageA',\
-         PostQuitMessage,'PostQuitMessage',\
-         LoadIcon,'LoadIconA',\
          LoadCursor,'LoadCursorA',\
-         DestroyWindow,'DestroyWindow',\
+         LoadIcon,'LoadIconA',\
          GetClientRect,'GetClientRect',\
+         BeginPaint,'BeginPaint',\
+         EndPaint,'EndPaint',\
+         InvalidateRect,'InvalidateRect',\
+         SetTimer,'SetTimer',\
+         KillTimer,'KillTimer',\
          ClientToScreen,'ClientToScreen',\
          GetCursorPos,'GetCursorPos',\
          SetCursorPos,'SetCursorPos',\
-         GetAsyncKeyState,'GetAsyncKeyState',\
+         ClipCursor,'ClipCursor',\
          ShowCursor,'ShowCursor',\
+         GetAsyncKeyState,'GetAsyncKeyState',\
+         PostQuitMessage,'PostQuitMessage',\
          GetDC,'GetDC',\
          ReleaseDC,'ReleaseDC'
 
